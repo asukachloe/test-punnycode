@@ -1,0 +1,32 @@
+name: Async Domain Fetcher
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  run-fetcher:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Harden Runner
+        uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
+        with:
+          egress-policy: audit
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install aiohttp async-timeout
+
+      - name: Run async fetcher
+        run: |
+          python async_fetch.py
