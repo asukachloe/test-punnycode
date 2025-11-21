@@ -1,22 +1,23 @@
 import asyncio
 import aiohttp
-import async_timeout
+import idna
 
-CONCURRENT_LIMIT = 100          # Max concurrent requests
-REQUEST_TIMEOUT = 5             # Seconds per request
-DOMAIN_FILE = "domains.txt"     # Input file
+CONCURRENT_LIMIT = 100
+REQUEST_TIMEOUT = 5
+DOMAIN_FILE = "domains.txt"
 
 
 async def fetch(session: aiohttp.ClientSession, url: str):
     try:
-        with async_timeout.timeout(REQUEST_TIMEOUT):
+        # asyncio.timeout is the correct context manager for Python 3.11+
+        async with asyncio.timeout(REQUEST_TIMEOUT):
             async with session.get(url, allow_redirects=True) as resp:
-                # We only fetch status and final URL, not body, for speed
                 return {
                     "url": url,
                     "status": resp.status,
                     "final_url": str(resp.url)
                 }
+
     except asyncio.TimeoutError:
         return {"url": url, "error": "timeout"}
     except aiohttp.ClientError as e:
@@ -32,7 +33,14 @@ async def worker(domain_queue: asyncio.Queue, session: aiohttp.ClientSession):
             domain_queue.task_done()
             break
 
-        url = f"http://{domain.strip()}"
+        try:
+            punycode_domain = idna.encode(domain).decode()
+            url = f"http://{punycode_domain}"
+        except idna.IDNAError:
+            print(f"[SKIP] {domain} -> invalid_idn")
+            domain_queue.task_done()
+            continue
+
         result = await fetch(session, url)
 
         if "error" in result:
@@ -44,7 +52,6 @@ async def worker(domain_queue: asyncio.Queue, session: aiohttp.ClientSession):
 
 
 async def main():
-    # Load domains
     with open(DOMAIN_FILE, "r") as f:
         domains = [line.strip() for line in f if line.strip()]
 
@@ -53,11 +60,10 @@ async def main():
     for d in domains:
         domain_queue.put_nowait(d)
 
-    # Prepare HTTP client with tuned connector
     connector = aiohttp.TCPConnector(
         limit=CONCURRENT_LIMIT,
         ttl_dns_cache=300,
-        ssl=False  # disable SSL verify to avoid slow handshake failures
+        ssl=False
     )
 
     async with aiohttp.ClientSession(connector=connector) as session:
@@ -66,10 +72,8 @@ async def main():
             w = asyncio.create_task(worker(domain_queue, session))
             workers.append(w)
 
-        # Wait until all work items are processed
         await domain_queue.join()
 
-        # Stop workers
         for _ in workers:
             domain_queue.put_nowait(None)
 
